@@ -1,6 +1,7 @@
 package fi.dy.masa.tweakeroo.mixin;
 
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -20,6 +21,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.world.GameMode;
 
 import fi.dy.masa.tweakeroo.config.Configs;
 import fi.dy.masa.tweakeroo.config.FeatureToggle;
@@ -32,6 +34,12 @@ import fi.dy.masa.tweakeroo.util.InventoryUtils;
 public abstract class MixinClientPlayerInteractionManager
 {
     @Shadow @Final private MinecraftClient client;
+    @Shadow private int blockBreakingCooldown;
+    @Shadow private GameMode gameMode;
+    private static final int BREAK_COOLDOWN_INITIAL = 5;
+    private static final int BREAK_COOLDOWN_REPEAT = 0;
+    private int newBlockBreakingCooldown;
+    private boolean breakingIsRepeating = false;
 
     @Inject(method = "interactItem", at = @At(
             value = "INVOKE",
@@ -137,6 +145,9 @@ public abstract class MixinClientPlayerInteractionManager
     @Inject(method = "attackBlock", at = @At("HEAD"), cancellable = true)
     private void handleBreakingRestriction1(BlockPos pos, Direction side, CallbackInfoReturnable<Boolean> cir)
     {
+        this.newBlockBreakingCooldown = this.breakingIsRepeating ? BREAK_COOLDOWN_REPEAT : BREAK_COOLDOWN_INITIAL;
+        this.breakingIsRepeating = false;
+
         if (CameraUtils.shouldPreventPlayerInputs() ||
             PlacementTweaks.isPositionAllowedByBreakingRestriction(pos, side) == false)
         {
@@ -151,6 +162,16 @@ public abstract class MixinClientPlayerInteractionManager
     @Inject(method = "updateBlockBreakingProgress", at = @At("HEAD"), cancellable = true) // MCP: onPlayerDamageBlock
     private void handleBreakingRestriction2(BlockPos pos, Direction side, CallbackInfoReturnable<Boolean> cir)
     {
+        this.blockBreakingCooldown = 0;
+        if (this.newBlockBreakingCooldown > 0)
+        {
+            this.newBlockBreakingCooldown--;
+            if (this.gameMode.isCreative())
+            {
+                cir.setReturnValue(true);
+            }
+        }
+
         if (CameraUtils.shouldPreventPlayerInputs() ||
             PlacementTweaks.isPositionAllowedByBreakingRestriction(pos, side) == false)
         {
@@ -160,6 +181,31 @@ public abstract class MixinClientPlayerInteractionManager
         {
             InventoryUtils.trySwapCurrentToolIfNearlyBroken();
         }
+    }
+
+    @Inject(method = "updateBlockBreakingProgress", at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/network/ClientPlayerInteractionManager;attackBlock(" +
+                     "Lnet/minecraft/util/math/BlockPos;" +
+                     "Lnet/minecraft/util/math/Direction;" +
+                     ")Z"),
+            cancellable = true) // MCP: onPlayerDamageBlock
+    private void survivalBreakingRateLimit(BlockPos pos, Direction side, CallbackInfoReturnable<Boolean> cir)
+    {
+        if (this.newBlockBreakingCooldown > 0)
+        {
+            cir.setReturnValue(true);
+        }
+        this.breakingIsRepeating = true;
+    }
+
+    @Inject(method = "updateBlockBreakingProgress", at = @At(
+            value = "FIELD",
+            opcode = Opcodes.PUTFIELD,
+            target = "Lnet/minecraft/client/network/ClientPlayerInteractionManager;blockBreakingCooldown:I"))
+    private void setBreakRepeatCooldown(BlockPos pos, Direction side, CallbackInfoReturnable<Boolean> cir)
+    {
+        this.newBlockBreakingCooldown = BREAK_COOLDOWN_REPEAT;
     }
 
     @Inject(method = "getReachDistance", at = @At("HEAD"), cancellable = true)
